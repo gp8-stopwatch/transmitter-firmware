@@ -1,0 +1,2 @@
+* There's something called atpacks. (Here they discuss it)[https://www.avrfreaks.net/forum/solved-compiling-attiny1607-or-other-0-series1-series-avr-gcc].
+  * Better use (the official compiler)[https://www.microchip.com/mplab/avr-support/avr-and-arm-toolchains-c-compilers].
