@@ -78,8 +78,12 @@ int main ()
         // All pins as inputs initially.
         PORTA.DIR = 0;
 
-        // IR as output
-        PORTA.DIR |= (1 << Pin::ir);
+        // Configure output pins. Rest is left as they were, i.e. inputs.
+        // Sens
+        PORTA.DIR |= (1 << Pin::ir | 1 << Pin::senseOn);
+
+        // All output pins to off.
+        PORTA.OUT = 0;
 
         /*--------------------------------------------------------------------------*/
         // UART for debugging.
@@ -107,6 +111,7 @@ int main ()
 
         /*--------------------------------------------------------------------------*/
 
+        VREF.CTRLA |= VREF_ADC0REFSEL_2V5_gc;
         ADC0.CTRLB |= (ADC_SAMPNUM0_bm | ADC_SAMPNUM1_bm);                                    // Accumulate 8 consecutive results
         ADC0.CTRLC |= (ADC_PRESC0_bm | ADC_PRESC1_bm | ADC_PRESC2_bm) /* | ADC_REFSEL0_bm */; // Prescaler set to divide by 256 (slow)
         ADC0.MUXPOS = 0x07;                                                                   // measure on PA7
@@ -125,6 +130,9 @@ int main ()
                 // PORTA.OUT = tmp;
                 _delay_ms (50);
 
+                // Turn the voltage divider on.
+                PORTA.OUT |= (1 << Pin::senseOn);
+
                 // Start the ADC conversion
                 ADC0.COMMAND = ADC_STCONV_bm; // This starts the measurement
 
@@ -132,6 +140,10 @@ int main ()
                 while ((ADC0.COMMAND & ADC_STCONV_bm) != 0 && (ADC0.INTFLAGS & ADC_RESRDY_bm) == 0) {
                 }
 
+                // Turn the voltage divider off.
+                PORTA.OUT &= ~(1 << Pin::senseOn);
+
+                // ~4900 == 3V, 6870 == 4V2
                 int adcResult = ADC0.RES;
                 print (adcResult);
                 print ("\r\n");
