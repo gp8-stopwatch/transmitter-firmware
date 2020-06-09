@@ -8,9 +8,14 @@
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/sleep.h>
 #include <stdint.h>
 #include <string.h>
 #include <util/delay.h>
+
+static constexpr int BATTERY_FULL = 42;     // 4.2
+static constexpr int BATTERY_LOW = 33;      // 3.3
+static constexpr int BATTERY_CRITICAL = 30; // 3.0
 
 enum Pin { redLed = 0, greenLed = 1, senseOn = 2, ir = 6, batSense = 7 };
 
@@ -71,19 +76,86 @@ void print (unsigned int i)
 }
 
 /**
+ * Main battery voltage sensing.
+ */
+int getBatteryVoltage ()
+{
+        // Turn the voltage divider on.
+        PORTA.OUT |= (1 << Pin::senseOn);
+
+        // Start the ADC conversion
+        ADC0.COMMAND = ADC_STCONV_bm; // This starts the measurement
+
+        // Wait for the converison to finish
+        while ((ADC0.COMMAND & ADC_STCONV_bm) != 0 && (ADC0.INTFLAGS & ADC_RESRDY_bm) == 0) {
+        }
+
+        // Turn the voltage divider off.
+        PORTA.OUT &= ~(1 << Pin::senseOn);
+
+        return ADC0.RES / 163;
+}
+
+void toggleGreen ()
+{
+        static bool b{};
+
+        if (b) {
+                PORTA.OUT |= (1 << Pin::greenLed);
+        }
+        else {
+                PORTA.OUT &= ~(1 << Pin::greenLed);
+        }
+
+        b = !b;
+}
+
+void toggleRed ()
+{
+        static bool b{};
+
+        if (b) {
+                PORTA.OUT |= (1 << Pin::redLed);
+        }
+        else {
+                PORTA.OUT &= ~(1 << Pin::redLed);
+        }
+
+        b = !b;
+}
+
+template <typename T, T low, T hi, typename Fn> struct Hysteresis {
+
+        Hysteresis (Fn fn) : fn{/* std::move */ (fn)} {}
+
+        bool operator() ()
+        {
+                if (fn () <= low) {
+                        isLow = true;
+                }
+                else if (fn () >= hi) {
+                        isLow = false;
+                }
+
+                return isLow;
+        }
+
+        operator bool () const { return isLow; }
+
+        Fn fn;
+        bool isLow{};
+};
+
+/**
  * CPU is running @ 20MHz, so CLK_PER is 3.3MHz
  */
 int main ()
 {
-        // All pins as inputs initially.
-        PORTA.DIR = 0;
-
         // Configure output pins. Rest is left as they were, i.e. inputs.
-        // Sens
-        PORTA.DIR |= (1 << Pin::ir | 1 << Pin::senseOn);
+        PORTA.DIR = (1 << Pin::ir) | (1 << Pin::senseOn) | (1 << Pin::redLed) | (1 << Pin::greenLed);
 
         // All output pins to off.
-        PORTA.OUT = 0;
+        PORTA.OUT = 0x00;
 
         /*--------------------------------------------------------------------------*/
         // UART for debugging.
@@ -93,32 +165,36 @@ int main ()
         PORTA.OUT = tmp;               // High
         USART0.BAUD = 115;             // 115200
         USART0.CTRLB |= USART_TXEN_bm; // Enable transmitter
-#endif
+#else
         /*--------------------------------------------------------------------------*/
         // PWM for the IR.
 
-        // // Load CCMP register with the period and duty cycle of the PWM
-        // TCB0.CCMPL = PWM_CNT_VALUE;
-        // TCB0.CCMPH = PWM_CNT_VALUE / 2;
-        // TCB0.CNT = 0;
+        // Load CCMP register with the period and duty cycle of the PWM
+        TCB0.CCMPL = PWM_CNT_VALUE;
+        TCB0.CCMPH = PWM_CNT_VALUE / 2;
+        TCB0.CNT = 0;
 
-        // // Enable TCB clock == CLK_PER
-        // TCB0.CTRLA |= TCB_ENABLE_bm;
+        // Enable TCB clock == CLK_PER
+        TCB0.CTRLA |= TCB_ENABLE_bm;
 
-        // // Enable Pin Output and configure TCB in 8-bit PWM mode
-        // TCB0.CTRLB |= TCB_CCMPEN_bm;
-        // TCB0.CTRLB |= TCB_CNTMODE_PWM8_gc;
-
+        // Enable Pin Output and configure TCB in 8-bit PWM mode
+        TCB0.CTRLB |= TCB_CCMPEN_bm;
+        TCB0.CTRLB |= TCB_CNTMODE_PWM8_gc;
+#endif
         /*--------------------------------------------------------------------------*/
+        // ADC
 
-        VREF.CTRLA |= VREF_ADC0REFSEL_2V5_gc;
-        ADC0.CTRLB |= (ADC_SAMPNUM0_bm | ADC_SAMPNUM1_bm);                                    // Accumulate 8 consecutive results
+        VREF.CTRLA |= VREF_ADC0REFSEL_2V5_gc;              // Voltage reference is set to 2.5V, and divider divides +BATT by 2.
+        ADC0.CTRLB |= (ADC_SAMPNUM0_bm | ADC_SAMPNUM1_bm); // Accumulate 8 consecutive results
         ADC0.CTRLC |= (ADC_PRESC0_bm | ADC_PRESC1_bm | ADC_PRESC2_bm) /* | ADC_REFSEL0_bm */; // Prescaler set to divide by 256 (slow)
         ADC0.MUXPOS = 0x07;                                                                   // measure on PA7
         // ADC0.MUXPOS = 0x00;
         ADC0.CTRLA |= ADC_ENABLE_bm; // Enable in 10bits resolution. Use internal voltage reference
 
         /*--------------------------------------------------------------------------*/
+
+        auto a = [] { return getBatteryVoltage (); };
+        Hysteresis<int, 33, 35, decltype (a)> lowVoltage (a);
 
         while (true) {
                 // volatile uint8_t tmp = PORTA.OUT;
@@ -130,22 +206,30 @@ int main ()
                 // PORTA.OUT = tmp;
                 _delay_ms (50);
 
-                // Turn the voltage divider on.
-                PORTA.OUT |= (1 << Pin::senseOn);
+                auto adcResult = getBatteryVoltage ();
 
-                // Start the ADC conversion
-                ADC0.COMMAND = ADC_STCONV_bm; // This starts the measurement
-
-                // Wait for the converison to finish
-                while ((ADC0.COMMAND & ADC_STCONV_bm) != 0 && (ADC0.INTFLAGS & ADC_RESRDY_bm) == 0) {
+                if (adcResult < BATTERY_CRITICAL) {
+                        print ("C ");
+                        PORTA.OUT = 0x00;
+                        PORTA.DIR = 0; // all pins to inputs
+                        set_sleep_mode (SLEEP_MODE_PWR_DOWN);
+                        sleep_enable ();
+                        sleep_cpu ();
+                }
+                else if (lowVoltage ()) {
+                        toggleRed ();
+                        PORTA.OUT &= ~(1 << Pin::greenLed);
+                        print ("R ");
+                }
+                else {
+                        toggleGreen ();
+                        PORTA.OUT &= ~(1 << Pin::redLed);
+                        print ("G ");
                 }
 
-                // Turn the voltage divider off.
-                PORTA.OUT &= ~(1 << Pin::senseOn);
-
-                // ~4900 == 3V, 6870 == 4V2
-                int adcResult = ADC0.RES;
+#ifdef WITH_DEBUG
                 print (adcResult);
                 print ("\r\n");
+#endif
         }
 }
