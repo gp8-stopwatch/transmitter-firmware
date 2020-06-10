@@ -17,7 +17,7 @@ static constexpr int BATTERY_FULL = 42;     // 4.2
 static constexpr int BATTERY_LOW = 33;      // 3.3
 static constexpr int BATTERY_CRITICAL = 30; // 3.0
 
-enum Pin { redLed = 0, greenLed = 1, senseOn = 2, ir = 6, batSense = 7 };
+enum Pin { trigger = 0, redLed = 0, greenLed = 1, senseOn = 2, ir = 6, batSense = 7 };
 
 static constexpr long int CLK_PER_Hz = 3300000;
 static constexpr long int CARRIER_Hz = 56000;
@@ -146,6 +146,20 @@ template <typename T, T low, T hi, typename Fn> struct Hysteresis {
         bool isLow{};
 };
 
+#ifdef WITH_TRIGGER
+ISR (PORTA_PORT_vect)
+{
+        PORTA.INTFLAGS = PORT_INT0_bm;
+
+        if (PORTA.IN & (1 << Pin::trigger)) {
+                TCB0.CTRLA &= ~TCB_ENABLE_bm;
+        }
+        else {
+                TCB0.CTRLA |= TCB_ENABLE_bm;
+        }
+}
+#endif
+
 /**
  * CPU is running @ 20MHz, so CLK_PER is 3.3MHz
  */
@@ -156,6 +170,11 @@ int main ()
 
         // All output pins to off.
         PORTA.OUT = 0x00;
+
+#ifdef WITH_TRIGGER
+        PORTA.PIN0CTRL = PORT_ISC_BOTHEDGES_gc;
+        sei ();
+#endif
 
         /*--------------------------------------------------------------------------*/
         // UART for debugging.
@@ -180,6 +199,9 @@ int main ()
         // Enable Pin Output and configure TCB in 8-bit PWM mode
         TCB0.CTRLB |= TCB_CCMPEN_bm;
         TCB0.CTRLB |= TCB_CNTMODE_PWM8_gc;
+
+        // EVSYS.ASYNCUSER0 = EVSYS_ASYNCUSER0_ASYNCCH0_gc; // enable TCB0 input to take channel 0
+        // EVSYS.ASYNCCH0 = EVSYS_ASYNCCH0_PORTA_PIN7_gc;   // enable event sys to take PA7 logic edge as an input
 #endif
         /*--------------------------------------------------------------------------*/
         // ADC
@@ -197,19 +219,11 @@ int main ()
         Hysteresis<int, 33, 35, decltype (a)> lowVoltage (a);
 
         while (true) {
-                // volatile uint8_t tmp = PORTA.OUT;
-                // tmp |= (1 << Pin::ir);
-                // PORTA.OUT = tmp;
-                // _delay_ms (1);
-
-                // tmp &= ~(1 << Pin::ir);
-                // PORTA.OUT = tmp;
-                _delay_ms (50);
+                _delay_ms (50); // This delay is pretty off
 
                 auto adcResult = getBatteryVoltage ();
 
                 if (adcResult < BATTERY_CRITICAL) {
-                        print ("C ");
                         PORTA.OUT = 0x00;
                         PORTA.DIR = 0; // all pins to inputs
                         set_sleep_mode (SLEEP_MODE_PWR_DOWN);
@@ -219,12 +233,10 @@ int main ()
                 else if (lowVoltage ()) {
                         toggleRed ();
                         PORTA.OUT &= ~(1 << Pin::greenLed);
-                        print ("R ");
                 }
                 else {
                         toggleGreen ();
                         PORTA.OUT &= ~(1 << Pin::redLed);
-                        print ("G ");
                 }
 
 #ifdef WITH_DEBUG
