@@ -13,9 +13,11 @@
 #include <string.h>
 #include <util/delay.h>
 
-static constexpr int BATTERY_FULL = 42;     // 4.2
-static constexpr int BATTERY_LOW = 33;      // 3.3
-static constexpr int BATTERY_CRITICAL = 30; // 3.0
+// All readings are 0.1 too high
+static constexpr int BATTERY_FULL = 41;     // 4.2
+static constexpr int BATTERY_LOW = 32;      // 3.3
+static constexpr int BATTERY_OK = 34;       // 3.3
+static constexpr int BATTERY_CRITICAL = 29; // 3.0
 
 enum Pin { trigger = 0, redLed = 0, greenLed = 1, senseOn = 2, ir = 6, batSense = 7 };
 
@@ -94,34 +96,6 @@ int getBatteryVoltage ()
         PORTA.OUT &= ~(1 << Pin::senseOn);
 
         return ADC0.RES / 163;
-}
-
-void toggleGreen ()
-{
-        static bool b{};
-
-        if (b) {
-                PORTA.OUT |= (1 << Pin::greenLed);
-        }
-        else {
-                PORTA.OUT &= ~(1 << Pin::greenLed);
-        }
-
-        b = !b;
-}
-
-void toggleRed ()
-{
-        static bool b{};
-
-        if (b) {
-                PORTA.OUT |= (1 << Pin::redLed);
-        }
-        else {
-                PORTA.OUT &= ~(1 << Pin::redLed);
-        }
-
-        b = !b;
 }
 
 template <typename T, T low, T hi, typename Fn> struct Hysteresis {
@@ -216,26 +190,33 @@ int main ()
         /*--------------------------------------------------------------------------*/
 
         auto a = [] { return getBatteryVoltage (); };
-        Hysteresis<int, 33, 35, decltype (a)> lowVoltage (a);
+        Hysteresis<int, BATTERY_LOW, BATTERY_OK, decltype (a)> lowVoltage (a); // The readings are 0.1V too high
 
         while (true) {
-                _delay_ms (50); // This delay is pretty off
-
+                _delay_ms (50); // This delay is somewhat off
                 auto adcResult = getBatteryVoltage ();
 
                 if (adcResult < BATTERY_CRITICAL) {
                         PORTA.OUT = 0x00;
                         PORTA.DIR = 0; // all pins to inputs
+                        TCB0.CTRLA &= ~TCB_ENABLE_bm;
+                        TCB0.CTRLB &= ~TCB_CCMPEN_bm;
+                        ADC0.CTRLA &= ~ADC_ENABLE_bm;
                         set_sleep_mode (SLEEP_MODE_PWR_DOWN);
                         sleep_enable ();
                         sleep_cpu ();
                 }
                 else if (lowVoltage ()) {
-                        toggleRed ();
-                        PORTA.OUT &= ~(1 << Pin::greenLed);
+                        // TODO enable the RED led somehow.
+                        // PORTA.OUTTGL = 1 << Pin::redLed;
+                        // PORTA.OUT &= ~(1 << Pin::greenLed);
+
+                        PORTA.OUTTGL = 1 << Pin::greenLed;
+                        PORTA.OUT &= ~(1 << Pin::redLed);
+                        _delay_ms (150); // Green LED blinking slower instead of the red one.
                 }
                 else {
-                        toggleGreen ();
+                        PORTA.OUTTGL = 1 << Pin::greenLed;
                         PORTA.OUT &= ~(1 << Pin::redLed);
                 }
 
